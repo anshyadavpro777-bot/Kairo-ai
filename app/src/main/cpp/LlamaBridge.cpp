@@ -288,8 +288,6 @@ Java_com_yourname_aiassistant_data_llm_LlamaEngine_nativeLoadModel(
 
     model_params.n_gpu_layers = 0;
 
-    model_params.use_mmap = true;
-
     g_model =
             llama_model_load_from_file(
                     model_file.c_str(),
