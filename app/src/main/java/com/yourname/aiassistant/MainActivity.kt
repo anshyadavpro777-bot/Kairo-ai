@@ -89,11 +89,18 @@ class MainActivity : ComponentActivity() {
 
                     status = "Model loaded. Generating...\n\n"
 
+                    val prompt =
+                        "<|im_start|>system\n" +
+                        "You are Kairo, a helpful AI assistant.<|im_end|>\n" +
+                        "<|im_start|>user\n" +
+                        "Hello, who are you?<|im_end|>\n" +
+                        "<|im_start|>assistant\n"
+
                     withContext(Dispatchers.Default) {
-                        var piece = engine.nativeGenerateToken("Hello, who are you?", true)
+                        var piece = engine.nativeGenerateToken(prompt, true)
                         var count = 0
 
-                        while (piece.isNotEmpty() && count < 80) {
+                        while (piece.isNotEmpty() && count < 200) {
                             val text = piece
                             withContext(Dispatchers.Main) {
                                 status += text
