@@ -5,19 +5,30 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.yourname.aiassistant.data.llm.LlamaEngine
@@ -30,6 +41,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
 
         val engine: LlamaEngine? = try {
             LlamaEngine()
@@ -41,10 +53,73 @@ class MainActivity : ComponentActivity() {
             var status by remember {
                 mutableStateOf(
                     if (engine == null) "Native library failed to load"
-                    else "Tap below, then choose your GGUF model file"
+                    else "Choose a model file, or load the saved one"
                 )
             }
+            var question by remember { mutableStateOf("") }
+            var reply by remember { mutableStateOf("") }
+            var input by remember { mutableStateOf("") }
+            var modelReady by remember { mutableStateOf(false) }
+            var generating by remember { mutableStateOf(false) }
+
             val scope = rememberCoroutineScope()
+            val scrollState = rememberScrollState()
+            val savedModel = File(filesDir, "model.gguf")
+
+            LaunchedEffect(reply) {
+                scrollState.scrollTo(scrollState.maxValue)
+            }
+
+            suspend fun loadModel(file: File) {
+                modelReady = false
+                status = "Loading model..."
+                val loaded = withContext(Dispatchers.Default) {
+                    engine?.nativeLoadModel(file.absolutePath, 2048, 4) == true
+                }
+                modelReady = loaded
+                status = if (loaded) "Model ready. Type a message below."
+                else "Model failed to load"
+            }
+
+            fun send() {
+                val text = input.trim()
+                if (engine == null || text.isEmpty() || !modelReady || generating) return
+
+                input = ""
+                question = text
+                reply = ""
+                generating = true
+
+                scope.launch {
+                    val prompt =
+                        "<|im_start|>system\n" +
+                        "You are Kairo, a helpful AI assistant.<|im_end|>\n" +
+                        "<|im_start|>user\n" +
+                        text + "<|im_end|>\n" +
+                        "<|im_start|>assistant\n"
+
+                    val finalText = withContext(Dispatchers.Default) {
+                        var raw = ""
+                        var piece = engine.nativeGenerateToken(prompt, true)
+                        var count = 0
+
+                        while (piece.isNotEmpty() && count < 400) {
+                            raw += piece
+                            if (raw.contains("<|im_end|>")) break
+                            val shown = raw
+                            withContext(Dispatchers.Main) {
+                                reply = shown
+                            }
+                            count++
+                            piece = engine.nativeGenerateToken(null, false)
+                        }
+                        raw.replace("<|im_end|>", "").trim()
+                    }
+
+                    reply = if (finalText.isEmpty()) "(No reply - try again)" else finalText
+                    generating = false
+                }
+            }
 
             val pickFile = rememberLauncherForActivityResult(
                 contract = ActivityResultContracts.OpenDocument()
@@ -56,72 +131,93 @@ class MainActivity : ComponentActivity() {
                 }
 
                 scope.launch {
-                    status = "Copying model into the app..."
+                    modelReady = false
+                    status = "Copying model into the app... this can take a minute"
 
-                    val modelFile = File(filesDir, "model.gguf")
+                    withContext(Dispatchers.Default) {
+                        engine.nativeUnload()
+                    }
 
-                    val copied = withContext(Dispatchers.IO) {
+                    val error: String? = withContext(Dispatchers.IO) {
                         try {
-                            contentResolver.openInputStream(uri)?.use { input ->
-                                modelFile.outputStream().use { output ->
-                                    input.copyTo(output)
+                            contentResolver.openInputStream(uri)?.use { src ->
+                                savedModel.outputStream().use { dst ->
+                                    src.copyTo(dst)
                                 }
                             }
-                            true
+                            null
                         } catch (e: Exception) {
-                            status = "Copy failed: ${e.message}"
-                            false
+                            e.message ?: "unknown error"
                         }
                     }
 
-                    if (!copied) return@launch
-
-                    status = "Loading model..."
-
-                    val loaded = withContext(Dispatchers.Default) {
-                        engine.nativeLoadModel(modelFile.absolutePath, 2048, 4)
-                    }
-
-                    if (!loaded) {
-                        status = "Model failed to load"
+                    if (error != null) {
+                        status = "Copy failed: $error"
                         return@launch
                     }
 
-                    status = "Model loaded. Generating...\n\n"
-
-                    val prompt =
-                        "<|im_start|>system\n" +
-                        "You are Kairo, a helpful AI assistant.<|im_end|>\n" +
-                        "<|im_start|>user\n" +
-                        "Hello, who are you?<|im_end|>\n" +
-                        "<|im_start|>assistant\n"
-
-                    withContext(Dispatchers.Default) {
-                        var piece = engine.nativeGenerateToken(prompt, true)
-                        var count = 0
-
-                        while (piece.isNotEmpty() && count < 200) {
-                            val text = piece
-                            withContext(Dispatchers.Main) {
-                                status += text
-                            }
-                            count++
-                            piece = engine.nativeGenerateToken(null, false)
-                        }
-                    }
+                    loadModel(savedModel)
                 }
             }
 
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
-                        Button(
-                            onClick = { pickFile.launch(arrayOf("*/*")) },
-                            enabled = engine != null
-                        ) {
-                            Text("Choose GGUF model file")
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .systemBarsPadding()
+                            .imePadding()
+                            .padding(16.dp)
+                    ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { pickFile.launch(arrayOf("*/*")) },
+                                enabled = engine != null && !generating
+                            ) {
+                                Text("Choose model")
+                            }
+                            Button(
+                                onClick = { scope.launch { loadModel(savedModel) } },
+                                enabled = engine != null && !generating && savedModel.exists()
+                            ) {
+                                Text("Load saved")
+                            }
                         }
-                        Text(status, modifier = Modifier.padding(top = 24.dp))
+
+                        Text(status, modifier = Modifier.padding(top = 8.dp))
+
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                                .verticalScroll(scrollState)
+                                .padding(top = 12.dp)
+                        ) {
+                            if (question.isNotEmpty()) {
+                                Text("You: $question")
+                                Text(
+                                    "Kairo: $reply",
+                                    modifier = Modifier.padding(top = 12.dp)
+                                )
+                            }
+                        }
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedTextField(
+                                value = input,
+                                onValueChange = { input = it },
+                                modifier = Modifier.weight(1f),
+                                placeholder = { Text("Type a message...") },
+                                enabled = modelReady && !generating
+                            )
+                            Button(
+                                onClick = { send() },
+                                enabled = modelReady && !generating && input.isNotBlank(),
+                                modifier = Modifier.padding(start = 8.dp)
+                            ) {
+                                Text("Send")
+                            }
+                        }
                     }
                 }
             }
